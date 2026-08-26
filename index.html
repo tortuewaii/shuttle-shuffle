@@ -308,6 +308,28 @@
   .manual-preview .slot.a{ border:2px solid #6FB98F; }
   .manual-preview .slot.b{ border:2px solid #E8956B; }
   .manual-preview .slot .slot-label{ font-size:11px; color:var(--sideline-gray); margin-bottom:4px; }
+
+  /* serve tracking */
+  .serve-card #skipServeLink, .serve-card #cancelServeEditLink{ color:var(--sideline-gray); font-size:13px; }
+  .serve-indicator{
+    display:flex; align-items:center; justify-content:center; gap:10px;
+    background:var(--court-green-dark);
+    border:1px solid rgba(232,197,71,0.4);
+    border-radius:12px;
+    padding:12px 14px;
+    margin-bottom:14px;
+    font-size:15px;
+    text-align:center;
+  }
+  .serve-indicator b{ color:var(--shuttle-yellow); font-size:16px; }
+  .edit-serve-btn{
+    background:rgba(245,245,240,0.1);
+    color:var(--line-white);
+    font-size:12px;
+    padding:6px 10px;
+    border-radius:8px;
+    font-weight:600;
+  }
   .lucky-name{
     font-family:'Rajdhani',sans-serif; font-weight:700; font-size:32px;
     color:var(--shuttle-yellow); margin:10px 0;
@@ -657,6 +679,7 @@
       teamA: teams[0], teamB: teams[1],
       restingIds: resting,
       scoreA: 0, scoreB: 0, finished: false,
+      serve: null,
       history: []
     };
     state.currentMatch = match;
@@ -832,6 +855,74 @@
     return null;
   }
 
+  // ---- serve tracking (badminton doubles rule) ----
+  // m.serve = null (not set yet) | {skip:true} | {team:'A'|'B', positions:{A:[rightId,leftId], B:[rightId,leftId]}}
+  // Server = whoever is in the "right" box when their team's score is even, "left" box when odd.
+  // The serving team's two positions swap every time THEY score (still serving).
+  // Positions only change for a team while that team is serving; they stay put while receiving.
+  function currentServerId(m){
+    if(!m.serve || m.serve.skip) return null;
+    var team = m.serve.team;
+    var score = team === 'A' ? m.scoreA : m.scoreB;
+    var idx = (score % 2 === 0) ? 0 : 1;
+    return m.serve.positions[team][idx];
+  }
+
+  var serveEditMode = false;
+
+  // Set/override who is currently serving. Places playerId in the box matching
+  // their team's current score parity, partner takes the other box.
+  function setServer(playerId){
+    var m = state.currentMatch;
+    if(!m) return;
+    var team = m.teamA.indexOf(playerId) >= 0 ? 'A' : 'B';
+    var teamArr = team === 'A' ? m.teamA : m.teamB;
+    var other = teamArr[0] === playerId ? teamArr[1] : teamArr[0];
+    var score = team === 'A' ? m.scoreA : m.scoreB;
+    var idx = (score % 2 === 0) ? 0 : 1;
+    var positions = idx === 0 ? [playerId, other] : [other, playerId];
+    if(!m.serve || m.serve.skip){
+      m.serve = { team: team, positions: { A: m.teamA.slice(), B: m.teamB.slice() } };
+    }
+    m.serve.team = team;
+    m.serve.positions[team] = positions;
+    serveEditMode = false;
+    save();
+    renderScoreView();
+  }
+
+  function skipServeTracking(){
+    state.currentMatch.serve = { skip: true };
+    serveEditMode = false;
+    save();
+    renderScoreView();
+  }
+
+  function serverPickerHtml(m, title, showSkip){
+    var btns = m.teamA.concat(m.teamB).map(function(id){
+      var teamCls = m.teamA.indexOf(id) >= 0 ? 'teamA' : 'teamB';
+      return '<button class="manual-chip ' + teamCls + ' serve-pick-btn" data-id="' + id + '">' + nameById(id) + '</button>';
+    }).join("");
+    return '<div class="card serve-card">' +
+      '<h2 class="section-title">🏸 ' + title + '</h2>' +
+      '<div class="chip-grid">' + btns + '</div>' +
+      (showSkip ? '<p class="hint" style="margin-top:10px;margin-bottom:0;"><a href="#" id="skipServeLink">ข้ามไป ไม่ต้องแทร็ก</a></p>' : '<p class="hint" style="margin-top:10px;margin-bottom:0;"><a href="#" id="cancelServeEditLink">ยกเลิก</a></p>') +
+    '</div>';
+  }
+
+  function wireServerPicker(showSkip){
+    document.querySelectorAll(".serve-pick-btn").forEach(function(btn){
+      btn.addEventListener("click", function(){ setServer(btn.dataset.id); });
+    });
+    if(showSkip){
+      var skipLink = document.getElementById("skipServeLink");
+      if(skipLink) skipLink.addEventListener("click", function(e){ e.preventDefault(); skipServeTracking(); });
+    } else {
+      var cancelLink = document.getElementById("cancelServeEditLink");
+      if(cancelLink) cancelLink.addEventListener("click", function(e){ e.preventDefault(); serveEditMode = false; renderScoreView(); });
+    }
+  }
+
   function renderScoreView(){
     var wrap = document.getElementById("scoreContent");
     var m = state.currentMatch;
@@ -841,7 +932,22 @@
       return;
     }
     var winner = computeWinner(m.scoreA, m.scoreB);
+
+    var serveHtml;
+    if(winner){
+      serveHtml = "";
+    } else if(!m.serve){
+      serveHtml = serverPickerHtml(m, "ใครเสิร์ฟก่อน", true);
+    } else if(m.serve.skip){
+      serveHtml = '<p class="hint" style="text-align:center;"><a href="#" id="enableServeLink">🏸 เริ่มแทร็กคนเสิร์ฟ</a></p>';
+    } else if(serveEditMode){
+      serveHtml = serverPickerHtml(m, "แก้ไขคนเสิร์ฟ", false);
+    } else {
+      serveHtml = '<div class="serve-indicator">🏸 กำลังเสิร์ฟ: <b>' + nameById(currentServerId(m)) + '</b> <button id="editServeBtn" class="edit-serve-btn">แก้ไข</button></div>';
+    }
+
     wrap.innerHTML =
+      serveHtml +
       '<div class="card">' +
         '<div class="scoreboard">' +
           '<div class="score-tile">' +
@@ -874,14 +980,35 @@
     if(winner){
       document.getElementById("finishMatchBtn").addEventListener("click", function(){ finishMatch(winner); });
     }
+
+    if(!winner && !m.serve){
+      wireServerPicker(true);
+    } else if(!winner && m.serve && m.serve.skip){
+      var enableLink = document.getElementById("enableServeLink");
+      if(enableLink) enableLink.addEventListener("click", function(e){ e.preventDefault(); m.serve = null; save(); renderScoreView(); });
+    } else if(!winner && serveEditMode){
+      wireServerPicker(false);
+    } else if(!winner && m.serve && !m.serve.skip){
+      var editBtn = document.getElementById("editServeBtn");
+      if(editBtn) editBtn.addEventListener("click", function(){ serveEditMode = true; renderScoreView(); });
+    }
   }
 
   function addPoint(team){
     var m = state.currentMatch;
     if(!m || m.finished) return;
     if(computeWinner(m.scoreA,m.scoreB)) return; // already at match point resolution shown
-    m.history.push({team: team});
+    var serveSnapshot = m.serve ? JSON.parse(JSON.stringify(m.serve)) : null;
+    m.history.push({team: team, prevServe: serveSnapshot});
     if(team === "A") m.scoreA++; else m.scoreB++;
+    if(m.serve && !m.serve.skip){
+      if(m.serve.team === team){
+        var arr = m.serve.positions[team];
+        m.serve.positions[team] = [arr[1], arr[0]];
+      } else {
+        m.serve.team = team; // side out — server is whoever's in the correct box already
+      }
+    }
     save();
     renderScoreView();
   }
@@ -890,6 +1017,8 @@
     if(!m || m.history.length === 0){ showToast("ไม่มีแต้มให้ย้อนแล้ว"); return; }
     var last = m.history.pop();
     if(last.team === "A") m.scoreA = Math.max(0,m.scoreA-1); else m.scoreB = Math.max(0,m.scoreB-1);
+    if("prevServe" in last) m.serve = last.prevServe;
+    serveEditMode = false;
     save();
     renderScoreView();
   }
